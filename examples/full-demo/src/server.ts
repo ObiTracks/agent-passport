@@ -11,9 +11,14 @@ import {
 } from './agent.js';
 import {
   createAccessGrant,
+  createProfile,
+  getAllConnections,
+  getConnectionId,
   getConnections,
   getOrCreateUser,
+  getProfiles,
   saveConnection,
+  setProfileConnection,
 } from './passport-store.js';
 
 loadLocalEnv();
@@ -62,7 +67,7 @@ function normalizeApp(app: string | undefined): string {
 async function syncConnection(email: string, appInput?: string): Promise<{
   user: ReturnType<typeof getOrCreateUser>;
   connected: boolean;
-  connections: ReturnType<typeof getConnections>;
+  connections: ReturnType<typeof getAllConnections>;
 }> {
   const user = getOrCreateUser(email);
   const app = normalizeApp(appInput);
@@ -71,7 +76,7 @@ async function syncConnection(email: string, appInput?: string): Promise<{
     return {
       user,
       connected: false,
-      connections: getConnections(user.id),
+      connections: getAllConnections(user.id),
     };
   }
 
@@ -92,20 +97,29 @@ async function syncConnection(email: string, appInput?: string): Promise<{
   return {
     user,
     connected: Boolean(activeAccount),
-    connections: getConnections(user.id),
+    connections: getAllConnections(user.id),
   };
 }
 
-async function syncPassport(email: string): Promise<{
+async function syncPassport(email: string, profileId = 'profile_default'): Promise<{
   user: ReturnType<typeof getOrCreateUser>;
   connections: ReturnType<typeof getConnections>;
+  allConnections: ReturnType<typeof getAllConnections>;
+  profiles: ReturnType<typeof getProfiles>;
+  profile: ReturnType<typeof getProfiles>[number];
 }> {
   const user = getOrCreateUser(email);
 
   if (!composio) {
+    const profiles = getProfiles(user.id);
+    const profile = profiles.find((item) => item.id === profileId) ?? profiles[0];
+
     return {
       user,
-      connections: getConnections(user.id),
+      connections: getConnections(user.id, profile.id),
+      allConnections: getAllConnections(user.id),
+      profiles,
+      profile,
     };
   }
 
@@ -126,9 +140,15 @@ async function syncPassport(email: string): Promise<{
     });
   }
 
+  const profiles = getProfiles(user.id);
+  const profile = profiles.find((item) => item.id === profileId) ?? profiles[0];
+
   return {
     user,
-    connections: getConnections(user.id),
+    connections: getConnections(user.id, profile.id),
+    allConnections: getAllConnections(user.id),
+    profiles,
+    profile,
   };
 }
 
@@ -194,20 +214,67 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
   }
 
   if (url.pathname === '/api/passport' && request.method === 'POST') {
-    const body = await readJsonBody<{ email?: string }>(request);
+    const body = await readJsonBody<{ email?: string; profileId?: string }>(request);
 
     if (!body.email) {
       sendJson(response, 400, { error: 'email is required.' });
       return;
     }
 
-    const passport = await syncPassport(body.email);
+    const passport = await syncPassport(body.email, body.profileId);
+    sendJson(response, 200, passport);
+    return;
+  }
+
+  if (url.pathname === '/api/profiles' && request.method === 'POST') {
+    const body = await readJsonBody<{ email?: string; name?: string }>(request);
+
+    if (!body.email) {
+      sendJson(response, 400, { error: 'email is required.' });
+      return;
+    }
+
+    const user = getOrCreateUser(body.email);
+    const profile = createProfile(user.id, body.name ?? '');
     sendJson(response, 200, {
-      ...passport,
-      profile: {
-        id: 'profile_default',
-        name: 'Default',
-      },
+      user,
+      profile,
+      profiles: getProfiles(user.id),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/profile-connections' && request.method === 'POST') {
+    const body = await readJsonBody<{
+      email?: string;
+      profileId?: string;
+      connectionId?: string;
+      enabled?: boolean;
+    }>(request);
+
+    if (!body.email) {
+      sendJson(response, 400, { error: 'email is required.' });
+      return;
+    }
+
+    if (!body.profileId || !body.connectionId) {
+      sendJson(response, 400, { error: 'profileId and connectionId are required.' });
+      return;
+    }
+
+    const user = getOrCreateUser(body.email);
+    const profile = setProfileConnection(
+      user.id,
+      body.profileId,
+      body.connectionId,
+      Boolean(body.enabled),
+    );
+
+    sendJson(response, 200, {
+      user,
+      profile,
+      profiles: getProfiles(user.id),
+      connectionIds: getAllConnections(user.id).map(getConnectionId),
     });
     return;
   }
@@ -218,23 +285,25 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
       return;
     }
 
-    const body = await readJsonBody<{ email?: string; app?: string }>(request);
+    const body = await readJsonBody<{ email?: string; app?: string; profileId?: string }>(request);
 
     if (!body.email) {
       sendJson(response, 400, { error: 'email is required.' });
       return;
     }
 
-    const passport = await syncPassport(body.email);
+    const passport = await syncPassport(body.email, body.profileId);
 
     if (passport.connections.length === 0) {
-      sendJson(response, 409, { error: 'Default passport has no connected apps yet.', passport });
+      sendJson(response, 409, { error: `${passport.profile.name} has no connected apps yet.`, passport });
       return;
     }
 
     const grant = createAccessGrant(
       passport.user,
-      'Run read-only checks across the Default passport.',
+      `Run read-only checks across the ${passport.profile.name} passport profile.`,
+      undefined,
+      passport.profile.id,
     );
     const result = await runDefaultPassportAgentMission(composio, passport.user.id, grant);
 
@@ -255,6 +324,7 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
     const body = await readJsonBody<{
       email?: string;
       message?: string;
+      profileId?: string;
       history?: ChatHistoryMessage[];
     }>(request);
 
@@ -268,14 +338,19 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
       return;
     }
 
-    const passport = await syncPassport(body.email);
+    const passport = await syncPassport(body.email, body.profileId);
 
     if (passport.connections.length === 0) {
-      sendJson(response, 409, { error: 'Default passport has no connected apps yet.', passport });
+      sendJson(response, 409, { error: `${passport.profile.name} has no connected apps yet.`, passport });
       return;
     }
 
-    const grant = createAccessGrant(passport.user, body.message.trim());
+    const grant = createAccessGrant(
+      passport.user,
+      body.message.trim(),
+      undefined,
+      passport.profile.id,
+    );
     const result = await runPassportChatMission(
       composio,
       passport.user.id,

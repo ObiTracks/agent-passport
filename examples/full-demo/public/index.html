@@ -167,29 +167,47 @@
         padding: 16px;
       }
 
-      .set-tabs {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
+      .profile-controls {
+        display: grid;
+        gap: 8px;
       }
 
-      .set-pill {
-        border: 1px solid #171717;
-        border-radius: 999px;
-        padding: 6px 10px;
-        background: #171717;
-        color: #ffffff;
-        font-size: 13px;
-      }
-
-      .set-pill.disabled {
-        border-color: #d8d4c9;
-        background: transparent;
-        color: #8a8378;
+      .profile-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
       }
 
       .passport-card strong {
         font-size: 18px;
+      }
+
+      .profile-membership {
+        display: grid;
+        gap: 8px;
+        margin-top: 4px;
+      }
+
+      .membership-row {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 8px;
+        align-items: start;
+        border: 1px solid #e5e0d5;
+        border-radius: 7px;
+        background: #ffffff;
+        padding: 8px;
+      }
+
+      .membership-row input {
+        width: auto;
+        margin-top: 3px;
+      }
+
+      .client-list {
+        display: grid;
+        gap: 7px;
+        margin-top: 4px;
       }
 
       .passport-list {
@@ -446,6 +464,10 @@
         .chat-form {
           grid-template-columns: 1fr;
         }
+
+        .profile-row {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
@@ -520,15 +542,19 @@
 
       <section class="passport">
         <div class="passport-card">
-          <span class="status">Passport set</span>
+          <span class="status">Connection profile</span>
           <strong id="passport-title">Default</strong>
-          <div class="set-tabs">
-            <span class="set-pill">Default</span>
-            <span class="set-pill disabled">Work later</span>
-            <span class="set-pill disabled">Personal later</span>
-            <span class="set-pill disabled">Client later</span>
+          <div class="profile-controls">
+            <div class="profile-row">
+              <select id="profile-select" aria-label="Passport profile">
+                <option value="profile_default">Default</option>
+              </select>
+              <button id="profile-create" class="secondary" type="button">New profile</button>
+            </div>
+            <div class="profile-membership" id="profile-membership"></div>
           </div>
           <p id="passport-summary">No connected apps loaded yet.</p>
+          <div class="client-list" id="client-list"></div>
         </div>
         <div class="passport-list" id="passport-list"></div>
       </section>
@@ -583,8 +609,13 @@
       const app = document.querySelector("#app");
       const apps = document.querySelector("#apps");
       const catalogSummary = document.querySelector("#catalog-summary");
+      const profileSelect = document.querySelector("#profile-select");
+      const profileCreate = document.querySelector("#profile-create");
+      const profileMembership = document.querySelector("#profile-membership");
+      const passportTitle = document.querySelector("#passport-title");
       const passportSummary = document.querySelector("#passport-summary");
       const passportList = document.querySelector("#passport-list");
+      const clientList = document.querySelector("#client-list");
       const connectButton = document.querySelector("#connect");
       const statusButton = document.querySelector("#status");
       const passportButton = document.querySelector("#passport");
@@ -597,6 +628,7 @@
       const chatSend = document.querySelector("#chat-send");
       let catalog = [];
       let chatMessages = [];
+      let selectedProfileId = "profile_default";
 
       function write(value) {
         output.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
@@ -608,11 +640,19 @@
 
       function renderPassport(passport) {
         const connections = passport.connections ?? [];
+        const allConnections = passport.allConnections ?? connections;
+        const profiles = passport.profiles ?? [{ id: "profile_default", name: "Default" }];
+        const selectedProfile = passport.profile ?? profiles[0];
         const appCount = new Set(connections.map((connection) => connection.app)).size;
         const accountCount = connections.length;
+        selectedProfileId = selectedProfile.id;
+        passportTitle.textContent = selectedProfile.name;
+        renderProfileSelector(profiles, selectedProfile.id);
+        renderProfileMembership(selectedProfile, allConnections);
+        renderAllowedClients(selectedProfile);
         passportSummary.textContent = connections.length
-          ? `${passport.profile?.name ?? "Default"} contains ${appCount} connected app${appCount === 1 ? "" : "s"} and ${accountCount} connected account${accountCount === 1 ? "" : "s"}.`
-          : "This user's default passport set is empty.";
+          ? `${selectedProfile.name} includes ${appCount} connected app${appCount === 1 ? "" : "s"} and ${accountCount} connected account${accountCount === 1 ? "" : "s"}.`
+          : `${selectedProfile.name} has no connected accounts selected.`;
 
         passportList.innerHTML = "";
 
@@ -640,11 +680,107 @@
         }
       }
 
+      function renderProfileSelector(profiles, selectedId) {
+        profileSelect.innerHTML = "";
+
+        for (const profile of profiles) {
+          const option = document.createElement("option");
+          option.value = profile.id;
+          option.textContent = profile.name;
+          profileSelect.appendChild(option);
+        }
+
+        profileSelect.value = selectedId;
+      }
+
+      function getConnectionId(connection) {
+        return `${connection.provider}:${connection.connectedAccountId}`;
+      }
+
+      function renderProfileMembership(profile, allConnections) {
+        profileMembership.innerHTML = "";
+
+        if (profile.id === "profile_default") {
+          const note = document.createElement("p");
+          note.textContent = "Default includes every ready connection. Create another profile to choose a smaller set.";
+          profileMembership.appendChild(note);
+          return;
+        }
+
+        if (!allConnections.length) {
+          const note = document.createElement("p");
+          note.textContent = "Connect an app before adding accounts to this profile.";
+          profileMembership.appendChild(note);
+          return;
+        }
+
+        for (const connection of allConnections) {
+          const row = document.createElement("label");
+          row.className = "membership-row";
+          const checkbox = document.createElement("input");
+          const body = document.createElement("span");
+          const connectionId = getConnectionId(connection);
+          checkbox.type = "checkbox";
+          checkbox.checked = profile.connectionIds?.includes(connectionId) ?? false;
+          body.textContent = `${connection.app} · ${connection.label || connection.connectedAccountId}`;
+          checkbox.addEventListener("change", async () => {
+            try {
+              await post("/api/profile-connections", {
+                profileId: profile.id,
+                connectionId,
+                enabled: checkbox.checked,
+              });
+              await loadPassport(profile.id);
+            } catch (error) {
+              write(error);
+              checkbox.checked = !checkbox.checked;
+            }
+          });
+          row.append(checkbox, body);
+          profileMembership.appendChild(row);
+        }
+      }
+
+      function renderAllowedClients(profile) {
+        const clients = profile.allowedClients ?? [];
+        clientList.innerHTML = "";
+
+        const label = document.createElement("span");
+        label.className = "status";
+        label.textContent = "Allowed AI apps";
+        clientList.appendChild(label);
+
+        if (!clients.length) {
+          const note = document.createElement("p");
+          note.textContent = "No AI apps have been granted access to this profile in this demo yet.";
+          clientList.appendChild(note);
+          return;
+        }
+
+        for (const client of clients) {
+          const pill = document.createElement("span");
+          pill.className = "account-pill";
+          pill.textContent = client.name;
+          clientList.appendChild(pill);
+        }
+      }
+
+      async function loadPassport(profileId = selectedProfileId) {
+        const body = await post("/api/passport", { profileId });
+        renderPassport(body);
+        return body;
+      }
+
       async function post(path, override = {}) {
         const response = await fetch(path, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ email: email.value, app: app.value, ...override }),
+          body: JSON.stringify({
+            email: email.value,
+            app: app.value,
+            profileId: selectedProfileId,
+            ...override,
+          }),
         });
         const body = await response.json();
 
@@ -823,8 +959,35 @@
 
       passportButton.addEventListener("click", async () => {
         try {
-          const body = await post("/api/passport");
+          const body = await loadPassport();
           renderPassport(body);
+          write(body);
+        } catch (error) {
+          write(error);
+        }
+      });
+
+      profileSelect.addEventListener("change", async () => {
+        try {
+          selectedProfileId = profileSelect.value;
+          const body = await loadPassport(selectedProfileId);
+          write(body);
+        } catch (error) {
+          write(error);
+        }
+      });
+
+      profileCreate.addEventListener("click", async () => {
+        const name = window.prompt("Name this connection profile");
+
+        if (!name?.trim()) {
+          return;
+        }
+
+        try {
+          const created = await post("/api/profiles", { name: name.trim() });
+          selectedProfileId = created.profile.id;
+          const body = await loadPassport(selectedProfileId);
           write(body);
         } catch (error) {
           write(error);
@@ -878,7 +1041,7 @@
 
       loadConfig();
       loadCatalog();
-      post("/api/passport")
+      loadPassport()
         .then(renderPassport)
         .catch(() => {});
     </script>

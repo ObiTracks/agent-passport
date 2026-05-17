@@ -82,7 +82,7 @@ export class ComposioAdapter {
       id: this.getObjectStringValue(item, 'id') ?? '',
       app: this.getToolkitSlug(item),
       status: (this.getObjectStringValue(item, 'status') ?? 'unknown').toLowerCase(),
-      label: this.getDisplayLabel(item),
+      label: this.getDisplayLabel(item) ?? this.getObjectStringValue(item, 'id'),
     }));
   }
 
