@@ -22,8 +22,6 @@ export function loadLocalEnv(): void {
     const rawValue = trimmed.slice(separatorIndex + 1).trim();
     const value = rawValue.replace(/^["']|["']$/g, '');
 
-    if (!process.env[key]) {
-      process.env[key] = value;
-    }
+    process.env[key] = value;
   }
 }
