@@ -4,7 +4,7 @@ import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ComposioAdapter } from './composio-adapter.js';
 import { loadLocalEnv } from './env.js';
-import { runDefaultPassportAgentMission } from './agent.js';
+import { runDefaultPassportAgentMission, runPassportChatMission } from './agent.js';
 import {
   createAccessGrant,
   getConnections,
@@ -233,6 +233,47 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
       'Run read-only checks across the Default passport.',
     );
     const result = await runDefaultPassportAgentMission(composio, passport.user.id, grant);
+
+    sendJson(response, 200, {
+      user: passport.user,
+      grant,
+      result,
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/chat' && request.method === 'POST') {
+    if (!composio) {
+      sendJson(response, 400, { error: 'COMPOSIO_API_KEY is not configured.' });
+      return;
+    }
+
+    const body = await readJsonBody<{ email?: string; message?: string }>(request);
+
+    if (!body.email) {
+      sendJson(response, 400, { error: 'email is required.' });
+      return;
+    }
+
+    if (!body.message?.trim()) {
+      sendJson(response, 400, { error: 'message is required.' });
+      return;
+    }
+
+    const passport = await syncPassport(body.email);
+
+    if (passport.connections.length === 0) {
+      sendJson(response, 409, { error: 'Default passport has no connected apps yet.', passport });
+      return;
+    }
+
+    const grant = createAccessGrant(passport.user, body.message.trim());
+    const result = await runPassportChatMission(
+      composio,
+      passport.user.id,
+      grant,
+      body.message.trim(),
+    );
 
     sendJson(response, 200, {
       user: passport.user,

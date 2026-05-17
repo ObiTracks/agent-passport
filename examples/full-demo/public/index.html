@@ -318,6 +318,98 @@
         word-break: break-word;
       }
 
+      .chat-shell {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        height: 560px;
+        border: 1px solid #d8d4c9;
+        border-radius: 8px;
+        background: #fffdf8;
+        overflow: hidden;
+      }
+
+      .chat-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 16px;
+        border-bottom: 1px solid #e5e0d5;
+      }
+
+      .chat-header p {
+        font-size: 13px;
+      }
+
+      .chat-history {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-height: 0;
+        overflow: auto;
+        padding: 16px;
+        scroll-behavior: smooth;
+      }
+
+      .message {
+        display: grid;
+        gap: 7px;
+        max-width: 820px;
+      }
+
+      .message.user {
+        justify-self: end;
+        margin-left: auto;
+      }
+
+      .message.agent {
+        justify-self: start;
+      }
+
+      .bubble {
+        border: 1px solid #e5e0d5;
+        border-radius: 8px;
+        padding: 10px 12px;
+        background: #ffffff;
+        color: #252525;
+        font-size: 14px;
+        line-height: 1.45;
+      }
+
+      .message.user .bubble {
+        border-color: #171717;
+        background: #171717;
+        color: #ffffff;
+      }
+
+      .tool-call {
+        display: grid;
+        gap: 6px;
+        border: 1px solid #d8d4c9;
+        border-radius: 8px;
+        background: #f8f5ee;
+        padding: 9px 10px;
+        font-size: 12px;
+      }
+
+      .tool-call strong {
+        font-size: 12px;
+      }
+
+      .tool-call code {
+        color: #555047;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .chat-form {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        padding: 12px;
+        border-top: 1px solid #e5e0d5;
+        background: #fffdf8;
+      }
+
       .status {
         display: inline-flex;
         width: fit-content;
@@ -345,6 +437,14 @@
 
         pre {
           min-height: 320px;
+        }
+
+        .chat-shell {
+          height: 520px;
+        }
+
+        .chat-form {
+          grid-template-columns: 1fr;
         }
       }
     </style>
@@ -442,6 +542,36 @@
       </section>
 
       <section>
+        <div class="chat-shell">
+          <div class="chat-header">
+            <div>
+              <h2>Chat with the demo agent</h2>
+              <p>
+                Ask it to use a connected app. It will read the Default passport, show the tool calls,
+                and execute through Composio.
+              </p>
+            </div>
+            <span class="status">Read-only</span>
+          </div>
+          <div class="chat-history" id="chat-history">
+            <div class="message agent">
+              <div class="bubble">
+                Connect an app, then ask something like: "Use Gmail and show me that the tool call works."
+              </div>
+            </div>
+          </div>
+          <form class="chat-form" id="chat-form">
+            <input
+              id="chat-input"
+              autocomplete="off"
+              placeholder="Ask the agent to use Gmail, Calendar, Drive, or another connected app"
+            />
+            <button id="chat-send" type="submit">Send</button>
+          </form>
+        </div>
+      </section>
+
+      <section>
         <pre id="output">Ready.</pre>
       </section>
     </main>
@@ -461,6 +591,10 @@
       const runButton = document.querySelector("#run");
       const authLinkBox = document.querySelector("#auth-link-box");
       const authLink = document.querySelector("#auth-link");
+      const chatHistory = document.querySelector("#chat-history");
+      const chatForm = document.querySelector("#chat-form");
+      const chatInput = document.querySelector("#chat-input");
+      const chatSend = document.querySelector("#chat-send");
       let catalog = [];
 
       function write(value) {
@@ -518,6 +652,56 @@
         }
 
         return body;
+      }
+
+      function scrollChatToMessage(messageElement) {
+        messageElement.scrollIntoView({ block: "start", behavior: "smooth" });
+      }
+
+      function appendMessage(role, text) {
+        const message = document.createElement("div");
+        message.className = `message ${role}`;
+        const bubble = document.createElement("div");
+        bubble.className = "bubble";
+        bubble.textContent = text;
+        message.appendChild(bubble);
+        chatHistory.appendChild(message);
+        scrollChatToMessage(message);
+        return message;
+      }
+
+      function appendToolCall(parent, toolCall) {
+        const node = document.createElement("div");
+        node.className = "tool-call";
+        const title = document.createElement("strong");
+        const code = document.createElement("code");
+        const payload = {
+          input: toolCall.input,
+          output: toolCall.output,
+          error: toolCall.error,
+        };
+        title.textContent = `${toolCall.name}${toolCall.app ? ` · ${toolCall.app}` : ""}`;
+        code.textContent = JSON.stringify(payload, null, 2);
+        node.append(title, code);
+        parent.appendChild(node);
+      }
+
+      function renderChatResult(body) {
+        const result = body.result;
+        const message = appendMessage("agent", result.answer);
+
+        for (const toolCall of result.toolCalls ?? []) {
+          appendToolCall(message, toolCall);
+        }
+
+        appendToolCall(message, {
+          name: "agent_passport.security_check",
+          output: {
+            rawTokenLeaked: result.rawTokenLeaked,
+            selectedApp: result.selectedApp,
+          },
+        });
+        write(body);
       }
 
       async function loadConfig() {
@@ -655,6 +839,35 @@
           write(body);
         } catch (error) {
           write(error);
+        }
+      });
+
+      chatForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const message = chatInput.value.trim();
+
+        if (!message) {
+          return;
+        }
+
+        appendMessage("user", message);
+        chatInput.value = "";
+        chatSend.disabled = true;
+        const pending = appendMessage("agent", "Reading the Default passport and preparing a provider tool call...");
+
+        try {
+          const body = await post("/api/chat", { message });
+          pending.remove();
+          mark("#step-grant", Boolean(body.grant));
+          mark("#step-agent", Boolean(body.result));
+          renderChatResult(body);
+        } catch (error) {
+          pending.remove();
+          appendMessage("agent", error.error || "The chat run failed.");
+          write(error);
+        } finally {
+          chatSend.disabled = false;
+          chatInput.focus();
         }
       });
 

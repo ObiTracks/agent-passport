@@ -29,6 +29,21 @@ export interface AgentRunResult {
   providerResult: unknown;
 }
 
+export interface ChatAgentResult {
+  prompt: string;
+  answer: string;
+  selectedApp?: string;
+  manifest: AgentRunResult['manifest'];
+  toolCalls: Array<{
+    name: string;
+    app?: string;
+    input?: Record<string, unknown>;
+    output?: unknown;
+    error?: string;
+  }>;
+  rawTokenLeaked: boolean;
+}
+
 function createManifest(grant: AccessGrant): AgentRunResult['manifest'] {
   return {
     profile: grant.profile.name,
@@ -197,4 +212,113 @@ export async function runDefaultPassportAgentMission(
     rawTokenLeaked: containsRawTokenShape({ grant, manifest }),
     providerResult: executions,
   };
+}
+
+export async function runPassportChatMission(
+  composio: ComposioAdapter,
+  userId: string,
+  grant: AccessGrant,
+  prompt: string,
+): Promise<ChatAgentResult> {
+  const manifest = createManifest(grant);
+  const readyConnections = manifest.tools.filter(
+    (tool) => tool.provider === 'composio' && tool.status === 'ready',
+  );
+  const normalizedPrompt = prompt.toLowerCase();
+  const selectedConnection =
+    readyConnections.find((connection) => normalizedPrompt.includes(connection.app.toLowerCase())) ??
+    readyConnections.find((connection) =>
+      connection.app.toLowerCase().includes(normalizedPrompt.trim()),
+    ) ??
+    readyConnections[0];
+  const toolCalls: ChatAgentResult['toolCalls'] = [
+    {
+      name: 'agent_passport.read_grant',
+      output: {
+        profile: grant.profile.name,
+        connectedApps: readyConnections.map((connection) => connection.app),
+      },
+    },
+  ];
+
+  if (!selectedConnection) {
+    return {
+      prompt,
+      answer: 'The Default passport does not have any ready connected apps yet.',
+      manifest,
+      toolCalls,
+      rawTokenLeaked: containsRawTokenShape({ grant, manifest }),
+    };
+  }
+
+  const connectedAccountId = selectedConnection.handoffRef.connectedAccountId;
+
+  if (typeof connectedAccountId !== 'string') {
+    toolCalls.push({
+      name: 'agent_passport.resolve_provider_handoff',
+      app: selectedConnection.app,
+      error: 'Missing Composio connected account id.',
+    });
+
+    return {
+      prompt,
+      answer: `I found ${selectedConnection.app}, but its provider handoff is incomplete.`,
+      selectedApp: selectedConnection.app,
+      manifest,
+      toolCalls,
+      rawTokenLeaked: containsRawTokenShape({ grant, manifest }),
+    };
+  }
+
+  try {
+    const tools = await composio.listTools(selectedConnection.app);
+    toolCalls.push({
+      name: 'composio.tools.list',
+      app: selectedConnection.app,
+      input: { toolkit: selectedConnection.app },
+      output: tools.slice(0, 12),
+    });
+
+    const execution = await composio.executeReadOnlyTool(
+      userId,
+      selectedConnection.app,
+      connectedAccountId,
+    );
+    const resultSummary = summarizeProviderResult(selectedConnection.app, execution.result);
+
+    toolCalls.push({
+      name: execution.toolSlug,
+      app: selectedConnection.app,
+      input: {
+        connectedAccountId,
+        mode: 'read-only',
+      },
+      output: resultSummary,
+    });
+
+    return {
+      prompt,
+      answer: `I used your Default passport to call ${execution.toolSlug} through Composio for ${selectedConnection.app}. Agent Passport only passed the provider handoff reference; it did not receive raw OAuth tokens.`,
+      selectedApp: selectedConnection.app,
+      manifest,
+      toolCalls,
+      rawTokenLeaked: containsRawTokenShape({ grant, manifest }),
+    };
+  } catch (error) {
+    toolCalls.push({
+      name: 'composio.tools.execute',
+      app: selectedConnection.app,
+      input: { connectedAccountId, mode: 'read-only' },
+      error: error instanceof Error ? error.message : 'Unknown execution error',
+    });
+
+    return {
+      prompt,
+      answer: `I found ${selectedConnection.app} in your Default passport, but the provider tool call failed.`,
+      selectedApp: selectedConnection.app,
+      manifest,
+      toolCalls,
+      rawTokenLeaked: containsRawTokenShape({ grant, manifest }),
+    };
+  }
 }
