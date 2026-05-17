@@ -596,6 +596,7 @@
       const chatInput = document.querySelector("#chat-input");
       const chatSend = document.querySelector("#chat-send");
       let catalog = [];
+      let chatMessages = [];
 
       function write(value) {
         output.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
@@ -851,19 +852,23 @@
         }
 
         appendMessage("user", message);
+        chatMessages.push({ role: "user", content: message });
         chatInput.value = "";
         chatSend.disabled = true;
         const pending = appendMessage("agent", "Reading the Default passport and preparing a provider tool call...");
 
         try {
-          const body = await post("/api/chat", { message });
+          const body = await post("/api/chat", { message, history: chatMessages.slice(-10) });
           pending.remove();
           mark("#step-grant", Boolean(body.grant));
           mark("#step-agent", Boolean(body.result));
           renderChatResult(body);
+          chatMessages.push({ role: "agent", content: body.result.answer });
         } catch (error) {
           pending.remove();
-          appendMessage("agent", error.error || "The chat run failed.");
+          const errorMessage = error.error || "The chat run failed.";
+          appendMessage("agent", errorMessage);
+          chatMessages.push({ role: "agent", content: errorMessage });
           write(error);
         } finally {
           chatSend.disabled = false;

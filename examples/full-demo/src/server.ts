@@ -4,7 +4,11 @@ import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ComposioAdapter } from './composio-adapter.js';
 import { loadLocalEnv } from './env.js';
-import { runDefaultPassportAgentMission, runPassportChatMission } from './agent.js';
+import {
+  type ChatHistoryMessage,
+  runDefaultPassportAgentMission,
+  runPassportChatMission,
+} from './agent.js';
 import {
   createAccessGrant,
   getConnections,
@@ -248,7 +252,11 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
       return;
     }
 
-    const body = await readJsonBody<{ email?: string; message?: string }>(request);
+    const body = await readJsonBody<{
+      email?: string;
+      message?: string;
+      history?: ChatHistoryMessage[];
+    }>(request);
 
     if (!body.email) {
       sendJson(response, 400, { error: 'email is required.' });
@@ -273,6 +281,7 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
       passport.user.id,
       grant,
       body.message.trim(),
+      Array.isArray(body.history) ? body.history : [],
     );
 
     sendJson(response, 200, {
