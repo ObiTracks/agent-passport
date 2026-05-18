@@ -40,6 +40,11 @@ export interface ChatAgentResult {
   selectedApp?: string;
   intent: 'answer' | 'list_tools' | 'execute_tool' | 'clarify';
   manifest: AgentRunResult['manifest'];
+  startupContext: {
+    profile: string;
+    connectedApps: string[];
+    connections: AgentManifestTool[];
+  };
   toolCalls: Array<{
     name: string;
     app?: string;
@@ -167,7 +172,7 @@ export async function runGmailAgentMission(
   grant: AccessGrant,
   app = 'gmail',
 ): Promise<AgentRunResult> {
-  const mission = `Use the user-approved Default profile to run one read-only ${app} check.`;
+  const mission = `Use the user-approved ${grant.profile.name} profile to run one read-only ${app} check.`;
   const manifest = createManifest(grant);
   const connection = manifest.tools.find(
     (tool) => tool.app === app && tool.provider === 'composio' && tool.status === 'ready',
@@ -200,8 +205,7 @@ export async function runDefaultPassportAgentMission(
   userId: string,
   grant: AccessGrant,
 ): Promise<AgentRunResult> {
-  const mission =
-    'Inspect the Default passport, list available provider tools, and execute safe read-only checks across connected apps.';
+  const mission = `Inspect the ${grant.profile.name} profile, list available provider tools, and execute safe read-only checks across connected apps.`;
   const manifest = createManifest(grant);
   const readyConnections = manifest.tools.filter(
     (tool) => tool.provider === 'composio' && tool.status === 'ready',
@@ -257,7 +261,7 @@ export async function runDefaultPassportAgentMission(
     availableTools,
     executions,
     decision:
-      'Use the Default passport handoff references, inspect provider tools, then execute read-only provider calls without touching raw OAuth tokens.',
+      `Use the ${grant.profile.name} profile handoff references, inspect provider tools, then execute read-only provider calls without touching raw OAuth tokens.`,
     rawTokenLeaked: containsRawTokenShape({ grant, manifest }),
     providerResult: executions,
   };
@@ -276,15 +280,7 @@ export async function runPassportChatMission(
   );
   const connectedApps = uniqueStrings(readyConnections.map((connection) => connection.app));
   const availableTools: Record<string, string[]> = {};
-  const toolCalls: ChatAgentResult['toolCalls'] = [
-    {
-      name: 'agent_passport.read_grant',
-      output: {
-        profile: grant.profile.name,
-        connectedApps: readyConnections.map((connection) => connection.app),
-      },
-    },
-  ];
+  const toolCalls: ChatAgentResult['toolCalls'] = [];
 
   const apiKey = process.env.OPENAI_API_KEY;
 
@@ -293,7 +289,7 @@ export async function runPassportChatMission(
   }
 
   if (readyConnections.length === 0) {
-    throw new Error('The Default passport does not have any ready connected apps yet.');
+    throw new Error(`The ${grant.profile.name} profile does not have any ready connected apps yet.`);
   }
 
   const client = new OpenAI({ apiKey });
@@ -336,12 +332,10 @@ export async function runPassportChatMission(
   const messages: ChatCompletionMessageParam[] = [
     {
       role: 'system',
-      content:
-        'You are the Agent Passport demo agent. Talk naturally. You have access to an Agent Passport grant, but never raw OAuth tokens. If the user asks a normal question, answer normally. If the user asks what apps/tools/capabilities you have, call list_passport_tools. If the user asks you to actually use an app, call execute_provider_readonly_tool. Do not dump JSON unless it helps. Be concise.',
-    },
-    {
-      role: 'user',
-      content: `Current passport context:\n${JSON.stringify(
+      content: `You are the Agent Passport demo agent. Talk naturally. You have access to the selected Agent Passport profile context below, but never raw OAuth tokens.
+
+Selected profile startup context:
+${JSON.stringify(
         {
           profile: grant.profile.name,
           connectedApps,
@@ -349,7 +343,9 @@ export async function runPassportChatMission(
         },
         null,
         2,
-      )}`,
+      )}
+
+Use this startup context to answer basic questions about which apps and providers are available. If the user asks for the broader provider tool catalog, call list_passport_tools. If the user asks you to actually use an app, call execute_provider_readonly_tool. If the user asks a normal question, answer normally. Do not dump JSON unless it helps. Be concise.`,
     },
     ...history.slice(-10).map((message): ChatCompletionMessageParam => ({
       role: message.role === 'agent' ? 'assistant' : 'user',
@@ -387,6 +383,11 @@ export async function runPassportChatMission(
         selectedApp,
         intent: executedProviderTool ? 'execute_tool' : 'answer',
         manifest,
+        startupContext: {
+          profile: grant.profile.name,
+          connectedApps,
+          connections: manifest.tools,
+        },
         toolCalls,
         rawTokenLeaked: containsRawTokenShape({ grant, manifest, messages }),
       };

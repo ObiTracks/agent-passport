@@ -409,11 +409,23 @@
         font-size: 12px;
       }
 
-      .tool-call strong {
+      .agent-context {
+        display: grid;
+        gap: 6px;
+        border: 1px solid #dedbd2;
+        border-radius: 8px;
+        background: #fbfaf6;
+        padding: 9px 10px;
         font-size: 12px;
       }
 
-      .tool-call code {
+      .tool-call strong,
+      .agent-context strong {
+        font-size: 12px;
+      }
+
+      .tool-call code,
+      .agent-context code {
         color: #555047;
         white-space: pre-wrap;
         word-break: break-word;
@@ -554,6 +566,10 @@
             <div class="profile-membership" id="profile-membership"></div>
           </div>
           <p id="passport-summary">No connected apps loaded yet.</p>
+          <div class="agent-context" id="agent-context">
+            <strong>Agent startup context</strong>
+            <code>No selected profile context loaded yet.</code>
+          </div>
           <div class="client-list" id="client-list"></div>
         </div>
         <div class="passport-list" id="passport-list"></div>
@@ -573,8 +589,8 @@
             <div>
               <h2>Chat with the demo agent</h2>
               <p>
-                Ask it to use a connected app. It will read the Default passport, show the tool calls,
-                and execute through Composio.
+                Ask it to use a connected app. The selected profile context is loaded before the model runs;
+                provider tool calls appear here only when the agent actually makes them.
               </p>
             </div>
             <span class="status">Read-only</span>
@@ -614,6 +630,7 @@
       const profileMembership = document.querySelector("#profile-membership");
       const passportTitle = document.querySelector("#passport-title");
       const passportSummary = document.querySelector("#passport-summary");
+      const agentContext = document.querySelector("#agent-context code");
       const passportList = document.querySelector("#passport-list");
       const clientList = document.querySelector("#client-list");
       const connectButton = document.querySelector("#connect");
@@ -649,6 +666,7 @@
         passportTitle.textContent = selectedProfile.name;
         renderProfileSelector(profiles, selectedProfile.id);
         renderProfileMembership(selectedProfile, allConnections);
+        renderAgentStartupContext(selectedProfile, connections);
         renderAllowedClients(selectedProfile);
         passportSummary.textContent = connections.length
           ? `${selectedProfile.name} includes ${appCount} connected app${appCount === 1 ? "" : "s"} and ${accountCount} connected account${accountCount === 1 ? "" : "s"}.`
@@ -765,6 +783,19 @@
         }
       }
 
+      function renderAgentStartupContext(profile, connections) {
+        agentContext.textContent = JSON.stringify({
+          profile: profile.name,
+          connectedApps: [...new Set(connections.map((connection) => connection.app))],
+          providerHandoffs: connections.map((connection) => ({
+            app: connection.app,
+            provider: connection.provider,
+            status: connection.status,
+            connectedAccountId: connection.connectedAccountId,
+          })),
+        }, null, 2);
+      }
+
       async function loadPassport(profileId = selectedProfileId) {
         const body = await post("/api/passport", { profileId });
         renderPassport(body);
@@ -831,13 +862,9 @@
           appendToolCall(message, toolCall);
         }
 
-        appendToolCall(message, {
-          name: "agent_passport.security_check",
-          output: {
-            rawTokenLeaked: result.rawTokenLeaked,
-            selectedApp: result.selectedApp,
-          },
-        });
+        if (result.startupContext) {
+          agentContext.textContent = JSON.stringify(result.startupContext, null, 2);
+        }
         write(body);
       }
 
@@ -1018,7 +1045,7 @@
         chatMessages.push({ role: "user", content: message });
         chatInput.value = "";
         chatSend.disabled = true;
-        const pending = appendMessage("agent", "Reading the Default passport and preparing a provider tool call...");
+        const pending = appendMessage("agent", "Checking the selected profile context...");
 
         try {
           const body = await post("/api/chat", { message, history: chatMessages.slice(-10) });
